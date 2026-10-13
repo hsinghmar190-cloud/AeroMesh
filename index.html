@@ -640,7 +640,7 @@ footer{color:#5E7882}
 </div></div>
 <div id="chart-tooltip"></div>
 <script>
-const API=(location.protocol==="file:"||location.port!=="8000")?"http://localhost:8000":"";
+const API = (location.protocol === "file:") ? "http://localhost:8000" : "";
 const $=id=>document.getElementById(id);
 const ZONES=[{name:"MI Road",type:"Target",key:"mi",c:"#259c64"},{name:"Panch Batti",type:"Control",key:"panch",c:"#789681"},{name:"Sindhi Camp",type:"Adjacent",key:"sindhi",c:"#dfa647"}];
 const MAXH=90,PM25_TRIGGER=90,PM10_TRIGGER=180,num=v=>v!==null&&v!==undefined&&v!==""&&Number.isFinite(Number(v))?Number(v):null,fmt=(v,d=0,u="")=>v==null?"—":Number(v).toFixed(d)+u;
