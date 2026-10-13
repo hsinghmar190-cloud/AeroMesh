@@ -8,7 +8,7 @@ from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import agent
@@ -94,6 +94,17 @@ except Exception as e:
     TORCH_AVAILABLE = False
 
 @app.get("/")
+async def root():
+    index_path = "index.html"
+    if not os.path.exists(index_path):
+        index_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "index.html")
+    return FileResponse(index_path)
+async def root():
+    index_path = "index.html"
+    if not os.path.exists(index_path):
+        # Fallback agar file project root directory mein ho
+        index_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "index.html")
+    return FileResponse(index_path)
 async def root():
     return {
         "status": "online",
