@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import random
 import time
 from collections import deque
@@ -69,6 +70,7 @@ class Zone:
 class AeroMeshStore:
     def __init__(self, seed: int = 7, clock: Callable[[], float] = time.time):
         self.seed, self.clock = seed, clock
+        self.last_telemetry_ts = 0.0
         self.reset()
 
     def reset(self) -> None:
@@ -100,6 +102,9 @@ class AeroMeshStore:
             zone_id = "MI_ROAD"
         z = self.zones[zone_id]
         now = self.clock()
+        self.last_telemetry_ts = now
+        self.last_update_ts = now
+
         if pm25 is not None:
             z.vals["pm25"] = float(pm25)
             z.drivers["pm25"] = float(pm25)
@@ -120,10 +125,37 @@ class AeroMeshStore:
         if flush_trigger:
             z.signal = "GREEN_FLUSH"
             z.flush_until = now + FLUSH_EFFECT_S
-        self.last_update_ts = now
 
     def tick(self) -> None:
         now = self.clock()
+
+        # 🚗 Auto-Pilot Simulation Wave (Runs seamlessly when SUMO script is idle)
+        if (now - self.last_telemetry_ts) > 6.0:
+            # 50-second realistic urban peak traffic & dust oscillation
+            phase = (now % 50.0) / 50.0
+            wave = (math.sin(phase * 2.0 * math.pi - math.pi / 2.0) + 1.0) / 2.0
+
+            target_z = self.zones.get("MI_ROAD")
+            if target_z:
+                target_z.drivers["pm25"] = 42.0 + (wave * 105.0)   # 42 to 147 µg/m³
+                target_z.drivers["pm10"] = 88.0 + (wave * 155.0)   # 88 to 243 µg/m³
+                target_z.drivers["queue"] = 12.0 + (wave * 26.0)   # 12 to 38 vehicles
+                target_z.drivers["speed"] = max(10.0, 32.0 - (wave * 18.0)) # 14 to 32 km/h
+                target_z.vpm = 52.0 + (wave * 32.0)
+
+            # Control and adjacent zones follow gentle ambient drift
+            panch = self.zones.get("PANCH_BATTI")
+            if panch:
+                panch.drivers["pm25"] = 33.0 + (wave * 14.0)
+                panch.drivers["pm10"] = 80.0 + (wave * 20.0)
+                panch.drivers["queue"] = 10.0 + (wave * 6.0)
+            
+            sindhi = self.zones.get("SINDHI_CAMP")
+            if sindhi:
+                sindhi.drivers["pm25"] = 30.0 + (wave * 12.0)
+                sindhi.drivers["pm10"] = 72.0 + (wave * 18.0)
+                sindhi.drivers["queue"] = 8.0 + (wave * 5.0)
+
         for z in self.zones.values():
             flushing = now < z.flush_until
             eff = dict(z.drivers)
@@ -139,6 +171,7 @@ class AeroMeshStore:
             if z.signal == "GREEN_FLUSH" and not flushing:
                 z.signal = "NORMAL_CYCLE"
             z.history.append((now, z.vals["pm25"], z.vals["pm10"]))
+
         self._evaluate_rules(now)
         self._resolve_pending(now)
         self.last_update_ts = now
@@ -189,19 +222,27 @@ class AeroMeshStore:
     def _evaluate_rules(self, now: float) -> None:
         for z in self.zones.values():
             d = self.derive(z, now)
-            # Signal Flush Rule
+            # Signal Flush Rule (PM2.5)
             if (d["pm25_aqi"] >= PM25_AQI_TRIGGER and now >= z.flush_until and now - z.last_flush >= FLUSH_COOLDOWN_S):
-                ev = self._event(now, z, "trigger_signal_flush", "PM25_AQI_THRESHOLD_EXCEEDED", {"metric": "pm25_aqi", "value": d["pm25_aqi"], "threshold": PM25_AQI_TRIGGER}, {"pm25_pm10_ratio": d["pm25_pm10_ratio"], "source_class": d["source_class"], "queue_length_veh_before": d["traffic"]["queue_length_veh"], "avg_speed_kmh_before": d["traffic"]["avg_speed_kmh"]})
+                ev = self._event(now, z, "trigger_signal_flush", "PM25_AQI_THRESHOLD_EXCEEDED", 
+                                  {"metric": "pm25_aqi", "value": d["pm25_aqi"], "threshold": PM25_AQI_TRIGGER}, 
+                                  {"pm25_pm10_ratio": d["pm25_pm10_ratio"], "source_class": d["source_class"], 
+                                   "queue_length_veh_before": d["traffic"]["queue_length_veh"], 
+                                   "avg_speed_kmh_before": d["traffic"]["avg_speed_kmh"]})
                 z.flush_until, z.last_flush = now + FLUSH_EFFECT_S, now
                 z.signal, z.flush_event_id = "GREEN_FLUSH", ev["event_id"]
 
-            # Tier 1: Fixed Median Sprinklers
+            # Tier 1: Fixed Median Sprinklers (PM10)
             if z.sprinkler_since is None:
-                if (d["source_class"] == "ROAD_DUST" and now - z.last_sprinkler_end >= SPRINKLER_COOLDOWN_S):
-                    ev = self._event(now, z, "water_sprinkler_active", "PM10_SPIKE_LOW_PM25_RATIO", {"metric": "pm10", "value": d["pm10"], "threshold": PM10_THRESHOLD}, {"pm25_pm10_ratio": d["pm25_pm10_ratio"], "ratio_max": DUST_RATIO_MAX, "pm25": d["pm25"], "source_class": d["source_class"]})
+                if ((d["source_class"] == "ROAD_DUST" or d["pm10"] >= 180.0) and now - z.last_sprinkler_end >= SPRINKLER_COOLDOWN_S):
+                    ev = self._event(now, z, "water_sprinkler_active", "PM10_SPIKE_LOW_PM25_RATIO", 
+                                      {"metric": "pm10", "value": d["pm10"], "threshold": PM10_THRESHOLD}, 
+                                      {"pm25_pm10_ratio": d["pm25_pm10_ratio"], "ratio_max": DUST_RATIO_MAX, "pm25": d["pm25"], "source_class": d["source_class"]})
                     z.sprinkler_since, z.sprinkler_event_id = now, ev["event_id"]
             elif (now - z.sprinkler_since >= SPRINKLER_MIN_RUN_S and d["pm10"] < 0.9 * PM10_THRESHOLD):
-                self._event(now, z, "water_sprinkler_deactivated", "PM10_BELOW_RECOVERY_LEVEL", {"metric": "pm10", "value": d["pm10"], "threshold": round(0.9 * PM10_THRESHOLD, 1)}, {"ran_for_s": round(now - z.sprinkler_since)}, measure_post=False)
+                self._event(now, z, "water_sprinkler_deactivated", "PM10_BELOW_RECOVERY_LEVEL", 
+                            {"metric": "pm10", "value": d["pm10"], "threshold": round(0.9 * PM10_THRESHOLD, 1)}, 
+                            {"ran_for_s": round(now - z.sprinkler_since)}, measure_post=False)
                 z.sprinkler_since, z.sprinkler_event_id = None, None
                 z.last_sprinkler_end = now
 
@@ -223,7 +264,7 @@ class AeroMeshStore:
                         {"metric": "pm10", "value": d["pm10"], "threshold": 180.0},
                         {"ticket": z.sweeper_ticket, "action": "Wet-Mist + Mechanical Broom Vacuum Sweep"}
                     )
-                elif z.sweeper_status == "DISPATCHED" and (now - z.sweeper_dispatched_at > 20.0): # Simulation SLA breach
+                elif z.sweeper_status == "DISPATCHED" and (now - z.sweeper_dispatched_at > 20.0): # 20s simulation SLA timeout
                     z.sweeper_status = "SLA_BREACHED"
                     z.sweeper_ticket["sla_breached"] = True
                     self._event(
@@ -274,12 +315,13 @@ class AeroMeshStore:
         target_z = self.zones.get("MI_ROAD") or list(self.zones.values())[0]
         is_flush = (now < target_z.flush_until) or (target_z.signal == "GREEN_FLUSH")
         is_spr = target_z.sprinkler_since is not None
+        is_live = (now - self.last_telemetry_ts) <= 6.0
 
         return {
             "timestamp": _iso(now),
             "as_of": _iso(now),
-            "data_age_seconds": max(0, round(now - self.last_update_ts)),
-            "mode": "LIVE_TELEMETRY" if now - self.last_update_ts <= 5.0 else "SIMULATION",
+            "data_age_seconds": max(0, round(now - self.last_telemetry_ts)) if self.last_telemetry_ts > 0 else 0,
+            "mode": "LIVE_TELEMETRY" if is_live else "SIMULATION",
             "aqi_standard": AQI_STANDARD,
             "thresholds": {"pm25_aqi_trigger": PM25_AQI_TRIGGER, "pm10_ug_m3": PM10_THRESHOLD, "dust_ratio_max": DUST_RATIO_MAX, "traffic_ratio_min": TRAFFIC_RATIO_MIN},
             "zones": [self.derive(z, now) for z in self.zones.values()],
