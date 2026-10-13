@@ -15,7 +15,7 @@ except ImportError:
 log = logging.getLogger("aeromesh")
 
 # 👇 Yahan tumhari Gemini API key set kar di gayi hai
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6IFvU_150bcJxsD3mIJdD270TVjrnIG2W8Ak4XJSZQfPA")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if genai:
     genai.configure(api_key=GEMINI_API_KEY)
 
